@@ -1,0 +1,470 @@
+import os
+import json
+import csv
+import hashlib
+from datetime import datetime
+from tkinter import Tk, Label, Entry, Button, StringVar, messagebox, filedialog, ttk
+from tkinter.ttk import Progressbar, Combobox
+from googlesearch import search
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+
+class OSINTToolLGPD:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Consulta LGPD Open Source Intelligence")
+        self.root.geometry("600x600")
+        
+        # Variáveis de controle
+        self.nome = StringVar()
+        self.username = StringVar()
+        self.email = StringVar()
+        self.telefone = StringVar()
+        self.cidade = StringVar()
+        self.dork_type = StringVar(value="padrao")
+        
+        # Variáveis de saída
+        self.results = {}
+        self.temp_files = []
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        # Frame de entrada de dados
+        Label(self.root, text="Dados para Busca (todos opcionais):").pack(pady=5)
+        
+        Label(self.root, text="Nome Completo:").pack()
+        Entry(self.root, textvariable=self.nome, width=60).pack()
+        
+        Label(self.root, text="Nome de Usuário:").pack()
+        Entry(self.root, textvariable=self.username, width=60).pack()
+        
+        Label(self.root, text="E-mail:").pack()
+        Entry(self.root, textvariable=self.email, width=60).pack()
+        
+        Label(self.root, text="Telefone:").pack()
+        Entry(self.root, textvariable=self.telefone, width=60).pack()
+        
+        Label(self.root, text="Cidade:").pack()
+        Entry(self.root, textvariable=self.cidade, width=60).pack()
+        
+        # Frame de seleção de dork
+        Label(self.root, text="\nTipo de Busca Avançada:").pack()
+        
+        dork_options = [
+            ("Padrão (termos entre aspas)", "padrao"),
+            ("Busca em Sites Específicos", "site"),
+            ("Busca por Tipo de Arquivo", "filetype"),
+            ("Busca em Títulos", "intitle"),
+            ("Busca em URLs", "inurl"),
+            ("Busca por Intervalo de Datas", "daterange")
+        ]
+        
+        for text, value in dork_options:
+            ttk.Radiobutton(self.root, text=text, variable=self.dork_type, value=value).pack(anchor='w', padx=20)
+        
+        # Campos adicionais para dorks específicos
+        self.site_frame = ttk.Frame(self.root)
+        Label(self.site_frame, text="Domínio (ex: facebook.com):").pack(side='left')
+        self.site_entry = Entry(self.site_frame, width=30)
+        self.site_entry.pack(side='left', padx=5)
+        self.site_frame.pack_forget()
+        
+        self.filetype_frame = ttk.Frame(self.root)
+        Label(self.filetype_frame, text="Tipo (ex: pdf, docx):").pack(side='left')
+        self.filetype_entry = Entry(self.filetype_frame, width=30)
+        self.filetype_entry.pack(side='left', padx=5)
+        self.filetype_frame.pack_forget()
+        
+        self.daterange_frame = ttk.Frame(self.root)
+        Label(self.daterange_frame, text="Intervalo (ex: 20200101-20221231):").pack(side='left')
+        self.daterange_entry = Entry(self.daterange_frame, width=30)
+        self.daterange_entry.pack(side='left', padx=5)
+        self.daterange_frame.pack_forget()
+        
+        # Botões de ação
+        Button(self.root, text="Realizar Busca com Dorking", command=self.run_search).pack(pady=10)
+        Button(self.root, text="Gerar Relatório", command=self.generate_report).pack(pady=5)
+        Button(self.root, text="Limpar Dados", command=self.clear_data).pack(pady=5)
+        
+        # Barra de progresso
+        self.progress = Progressbar(self.root, orient="horizontal", length=400, mode="determinate")
+        self.progress.pack(pady=10)
+        
+        # Atualizar interface quando o tipo de dork mudar
+        self.dork_type.trace_add('write', self.update_dork_ui)
+    
+    def update_dork_ui(self, *args):
+        """Atualiza a interface com campos adicionais para dorks específicos"""
+        self.site_frame.pack_forget()
+        self.filetype_frame.pack_forget()
+        self.daterange_frame.pack_forget()
+        
+        if self.dork_type.get() == "site":
+            self.site_frame.pack()
+        elif self.dork_type.get() == "filetype":
+            self.filetype_frame.pack()
+        elif self.dork_type.get() == "daterange":
+            self.daterange_frame.pack()
+    
+    def hash_data(self, data):
+        """Criptografa dados sensíveis para processamento temporário"""
+        if data:
+            return hashlib.sha256(data.encode()).hexdigest()
+        return ""
+    
+    def clean_temp_files(self):
+        """Remove todos os arquivos temporários criados"""
+        for file_path in self.temp_files:
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        self.temp_files = []
+    
+    def build_dork_query(self, terms):
+        """Constrói a query de busca com operadores Google Dork"""
+        dork_type = self.dork_type.get()
+        
+        # Operadores básicos para cada termo
+        quoted_terms = [f'"{term}"' for term in terms]
+        base_query = " ".join(quoted_terms)
+        
+        # Adiciona operadores específicos
+        if dork_type == "site" and self.site_entry.get().strip():
+            domain = self.site_entry.get().strip()
+            return f"site:{domain} {base_query}"
+        
+        elif dork_type == "filetype" and self.filetype_entry.get().strip():
+            filetype = self.filetype_entry.get().strip()
+            return f"{base_query} filetype:{filetype}"
+        
+        elif dork_type == "intitle":
+            return f"intitle:{base_query}"
+        
+        elif dork_type == "inurl":
+            return f"inurl:{base_query}"
+        
+        elif dork_type == "daterange" and self.daterange_entry.get().strip():
+            date_range = self.daterange_entry.get().strip()
+            return f"{base_query} daterange:{date_range}"
+        
+        else:
+            return base_query
+    
+    def run_search(self):
+        """Executa a busca no Google com operadores Dork"""
+        # Coletar dados do formulário
+        user_data = {
+            'nome': self.nome.get().strip(),
+            'username': self.username.get().strip(),
+            'email': self.email.get().strip(),
+            'telefone': self.telefone.get().strip(),
+            'cidade': self.cidade.get().strip()
+        }
+        
+        # Filtrar apenas campos preenchidos
+        filled_data = [v for v in user_data.values() if v]
+        
+        # Verificar se pelo menos um campo foi preenchido
+        if not filled_data:
+            messagebox.showerror("Erro", "Pelo menos um campo deve ser preenchido para a busca.")
+            return
+        
+        # Inicializar resultados
+        self.results = {'google': []}
+        self.progress['value'] = 0
+        self.root.update_idletasks()
+        
+        try:
+            # Construir query com Dorks
+            dork_query = self.build_dork_query(filled_data)
+            
+            self.progress['value'] = 30
+            self.root.update_idletasks()
+            
+            # Executar a busca no Google
+            try:
+                results = list(search(dork_query, num_results=15, lang='pt-br', advanced=True))
+                
+                self.progress['value'] = 80
+                self.root.update_idletasks()
+                
+                for result in results:
+                    self.results['google'].append({
+                        'query': dork_query,
+                        'url': result.url,
+                        'title': result.title,
+                        'description': result.description,
+                        'type': 'web_result'
+                    })
+                
+                self.progress['value'] = 100
+                messagebox.showinfo("Sucesso", f"Busca com Dorking concluída:\n{dork_query}")
+                
+            except Exception as e:
+                self.results['google'].append({
+                    'query': dork_query,
+                    'error': f"Erro na busca: {str(e)}"
+                })
+                messagebox.showerror("Erro", f"Ocorreu um erro durante a busca: {str(e)}")
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Ocorreu um erro ao preparar a busca: {str(e)}")
+            self.progress['value'] = 0
+    
+    def generate_report(self):
+        """Gera relatório nos formatos disponíveis"""
+        if not self.results or not self.results.get('google'):
+            messagebox.showerror("Erro", "Nenhum resultado disponível. Realize uma busca primeiro.")
+            return
+        
+        # Criar relatório básico
+        report = {
+            'metadata': {
+                'generated_at': datetime.now().isoformat(),
+                'tool': 'OSINT LGPD Tool - Google Dorking',
+                'search_query': self.results['google'][0]['query'] if self.results['google'] else "N/A",
+                'dork_type': self.dork_type.get()
+            },
+            'user_data': {
+                'nome': self.nome.get(),
+                'username': self.username.get(),
+                'email': self.email.get(),
+                'telefone': self.telefone.get(),
+                'cidade': self.cidade.get()
+            },
+            'results': self.results,
+            'removal_contacts': {
+                'google': 'support-de@google.com',
+            },
+            'lgpd_template': self.generate_removal_email()
+        }
+        
+        # Perguntar pelo formato
+        format_choice = messagebox.askquestion("Formato do Relatório", 
+                                             "Deseja gerar o relatório em JSON?\nClique 'Não' para PDF ou CSV.")
+        
+        try:
+            if format_choice == 'yes':
+                # Salvar como JSON
+                file_path = filedialog.asksaveasfilename(defaultextension=".json",
+                                                        filetypes=[("JSON files", "*.json")])
+                if file_path:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(report, f, indent=2, ensure_ascii=False)
+                    messagebox.showinfo("Sucesso", f"Relatório salvo como JSON em {file_path}")
+            else:
+                # Perguntar entre PDF e CSV
+                csv_choice = messagebox.askquestion("Formato do Relatório", 
+                                                  "Deseja gerar o relatório em CSV?\nClique 'Não' para PDF.")
+                
+                if csv_choice == 'yes':
+                    # Converter para CSV
+                    file_path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                                            filetypes=[("CSV files", "*.csv")])
+                    if file_path:
+                        self.save_as_csv(report, file_path)
+                        messagebox.showinfo("Sucesso", f"Relatório salvo como CSV em {file_path}")
+                else:
+                    # Gerar PDF
+                    file_path = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                                            filetypes=[("PDF files", "*.pdf")])
+                    if file_path:
+                        self.save_as_pdf(report, file_path)
+                        messagebox.showinfo("Sucesso", f"Relatório salvo como PDF em {file_path}")
+        
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao gerar relatório: {str(e)}")
+    
+    def save_as_csv(self, report, file_path):
+        """Salva o relatório em formato CSV"""
+        # Preparar dados para CSV
+        rows = []
+        
+        # Cabeçalho
+        rows.append(["Relatório OSINT - LGPD (Google Dorking)"])
+        rows.append(["Tipo de Dork:", report['metadata']['dork_type']])
+        rows.append(["Termo de busca:", report['metadata']['search_query']])
+        rows.append(["Gerado em", report['metadata']['generated_at']])
+        rows.append([])
+        
+        # Dados do usuário
+        rows.append(["Dados do Usuário", ""])
+        for field, value in report['user_data'].items():
+            if value:
+                rows.append([field, value])
+        rows.append([])
+        
+        # Resultados
+        rows.append(["Resultados da Busca com Dorking", ""])
+        rows.append(["Título", "URL", "Descrição"])
+        
+        for result in report['results']['google']:
+            if 'error' in result:
+                rows.append(["ERRO", result['error'], ""])
+            else:
+                rows.append([
+                    result.get('title', ''),
+                    result.get('url', ''),
+                    result.get('description', '')[:200] + '...' if result.get('description') else ''
+                ])
+        
+        rows.append([])
+        
+        # Contatos para remoção
+        rows.append(["Contato para Solicitação de Remoção (LGPD)", ""])
+        rows.append(["Google", report['removal_contacts']['google']])
+        
+        # Escrever CSV
+        with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+            writer.writerows(rows)
+    
+    def save_as_pdf(self, report, file_path):
+        """Salva o relatório em formato PDF"""
+        doc = SimpleDocTemplate(file_path, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Título
+        story.append(Paragraph("Relatório OSINT - Consulta LGPD (Google Dorking)", styles['Title']))
+        story.append(Spacer(1, 12))
+        
+        # Metadados
+        story.append(Paragraph(f"Tipo de Dork: {report['metadata']['dork_type']}", styles['Normal']))
+        story.append(Paragraph(f"Termo de busca: {report['metadata']['search_query']}", styles['Normal']))
+        story.append(Paragraph(f"Gerado em: {report['metadata']['generated_at']}", styles['Normal']))
+        story.append(Spacer(1, 12))
+        
+        # Dados do usuário
+        story.append(Paragraph("Dados do Usuário:", styles['Heading2']))
+        user_data = "<br/>".join([f"<b>{k}:</b> {v}" for k, v in report['user_data'].items() if v])
+        story.append(Paragraph(user_data, styles['Normal']))
+        story.append(Spacer(1, 12))
+        
+        # Resultados
+        story.append(Paragraph("Resultados da Busca com Dorking:", styles['Heading2']))
+        
+        for result in report['results']['google']:
+            if 'error' in result:
+                story.append(Paragraph(f"<b>Erro:</b> {result['error']}", styles['Normal']))
+            else:
+                story.append(Paragraph(
+                    f"<b>Título:</b> {result.get('title', 'Sem título')}<br/>"
+                    f"<b>URL:</b> {result.get('url', '')}<br/>"
+                    f"<b>Descrição:</b> {result.get('description', 'Sem descrição')[:200]}...",
+                    styles['Normal']))
+            
+            story.append(Spacer(1, 8))
+        
+        # Contatos para remoção
+        story.append(Paragraph("Contato para Solicitação de Remoção (LGPD):", styles['Heading2']))
+        story.append(Paragraph(f"<b>Google:</b> {report['removal_contacts']['google']}", styles['Normal']))
+        story.append(Spacer(1, 12))
+        
+        # Modelo de e-mail
+        story.append(Paragraph("Modelo de E-mail para Remoção:", styles['Heading2']))
+        story.append(Paragraph(report['lgpd_template'], styles['Normal']))
+        
+        # Gerar PDF
+        doc.build(story)
+    
+    def generate_removal_email(self):
+        """Gera um modelo de e-mail para solicitação de remoção de dados"""
+        user_data = {
+            'nome': self.nome.get(),
+            'username': self.username.get(),
+            'email': self.email.get(),
+            'telefone': self.telefone.get(),
+            'cidade': self.cidade.get()
+        }
+        
+        email_template = f"""
+        Assunto: Solicitação de remoção de dados pessoais conforme LGPD
+        
+        Prezados,
+        
+        Meu nome é {user_data.get('nome', '[Seu Nome]')} e estou entrando em contato para 
+        solicitar a remoção dos meus dados pessoais de sua plataforma, conforme 
+        previsto na Lei Geral de Proteção de Dados (LGPD - Lei 13.709/2018).
+        
+        Identifiquei que informações pessoais minhas aparecem nos seguintes resultados de busca:
+        {self.format_search_results_for_email()}
+        
+        Os dados que solicito a remoção são:
+        {self.format_user_data_for_email()}
+        
+        Conforme o Artigo 18 da LGPD, solicito que seja realizada a eliminação 
+        imediata destes dados de seus sistemas, bem como de qualquer outra 
+        informação pessoal minha que esteja sob seu controle.
+        
+        Caso necessário, estou disponível para fornecer informações adicionais 
+        que possam auxiliar na identificação dos registros.
+        
+        Agradeço pela atenção e aguardo confirmação de que a solicitação foi 
+        processada dentro do prazo legal de 15 dias.
+        
+        Atenciosamente,
+        {user_data.get('nome', '[Seu Nome]')}
+        {user_data.get('email', '[Seu E-mail]')}
+        {user_data.get('telefone', '[Seu Telefone]')}
+        """
+        
+        return email_template
+    
+    def format_search_results_for_email(self):
+        """Formata os resultados da busca para inclusão no e-mail"""
+        if not self.results or not self.results.get('google'):
+            return "\nNenhum resultado específico para mencionar."
+        
+        formatted = []
+        for result in self.results['google'][:5]:  # Limitar a 5 resultados no email
+            if 'error' not in result:
+                formatted.append(f"- {result.get('title', 'Sem título')}")
+                formatted.append(f"  URL: {result.get('url', '')}")
+                if result.get('description'):
+                    formatted.append(f"  Descrição: {result.get('description', '')[:100]}...")
+                formatted.append("")
+        
+        return "\n" + "\n".join(formatted) if formatted else "\nNenhum resultado específico para mencionar."
+    
+    def format_user_data_for_email(self):
+        """Formata os dados do usuário para inclusão no e-mail"""
+        user_data = {
+            'Nome': self.nome.get(),
+            'Nome de usuário': self.username.get(),
+            'E-mail': self.email.get(),
+            'Telefone': self.telefone.get(),
+            'Cidade': self.cidade.get()
+        }
+        
+        formatted = []
+        for field, value in user_data.items():
+            if value:
+                formatted.append(f"- {field}: {value}")
+        
+        return "\n".join(formatted) if formatted else "Nenhum dado específico fornecido."
+    
+    def clear_data(self):
+        """Limpa todos os dados coletados"""
+        self.nome.set("")
+        self.username.set("")
+        self.email.set("")
+        self.telefone.set("")
+        self.cidade.set("")
+        self.dork_type.set("padrao")
+        self.site_entry.delete(0, 'end')
+        self.filetype_entry.delete(0, 'end')
+        self.daterange_entry.delete(0, 'end')
+        self.results = {}
+        self.progress['value'] = 0
+        self.clean_temp_files()
+        self.update_dork_ui()
+        messagebox.showinfo("Informação", "Todos os dados foram limpos.")
+
+if __name__ == "__main__":
+    root = Tk()
+    app = OSINTToolLGPD(root)
+    root.mainloop()
